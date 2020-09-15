@@ -60,9 +60,11 @@ class Cmp:
 
     def compare(self, one, two, include_matches=False, order=True, max_length=30, max_iter=1000, path=None):
         path = path if path is not None else []
-
+        if one is two:
+            logger.info('Objects are the same.  Returning match')
+            return CmpResult(True, path, diff='Same object compared') if include_matches else None
         if type(one) != type(two):
-            return CmpResult(False, path, self._fmt(Mismatches.Type, one, two))
+            return CmpResult(False, path, diff=self._fmt(Mismatches.Type, one, two))
         cmp = self.comparators.get(type(one))
         if cmp:
             return cmp.compare(one, two, order=order, max_length=max_length, path=path, include_matches=include_matches)
@@ -80,10 +82,12 @@ class Cmp:
                                      max_length=max_length,
                                      path=path + [k],
                                      include_matches=include_matches)
-                    if r or include_matches:
+                    if r and not r.match or include_matches:
                         items[k] = r
             for k in missing_in_one:
                 items[k] = CmpResult(False, path + [k], diff=self._fmt(Mismatches.MissingKey, None, k))
+            match = all([v.match for k, v in items.items()])
+            return CmpResult(match, path, items=items) if not match or include_matches else None
         if _iterable(one):
             try:
                 len(one)
@@ -108,14 +112,25 @@ class Cmp:
                     t = sorted(t)
                 except:
                     pass
-            items = [self.compare(o[x], t[x], order=order, max_length=max_length, path=path + [x])
-                     for x in range(len(o))]
-            match = all([x.match for x in items])
-            return CmpResult(match, path, items=items) if match or include_matches else None
+
+            items = []
+            match = True
+            for x in range(len(o)):
+                r = self.compare(o[x],
+                                 t[x],
+                                 order=order,
+                                 max_length=max_length,
+                                 path=path + [x],
+                                 include_matches=include_matches)
+                if r:
+                    items.append(r)
+                    if match:
+                        match = r.match
+            return CmpResult(match, path, items=items) if not match or include_matches else None
         else:
             match = eq(one, two)
             diff = _str(one, two, max_length, match=match)
-            return CmpResult(match, path, diff=diff) if match or include_matches else None
+            return CmpResult(match, path, diff=diff) if not match or include_matches else None
 
 
 def _str(o, t, max_length, match=True):
