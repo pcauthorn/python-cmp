@@ -12,6 +12,7 @@ context
 
 """
 import logging
+from collections import Mapping
 from itertools import islice
 from operator import eq
 
@@ -22,14 +23,21 @@ class Mismatches:
     Type = 'Type mismatch'
     Size = 'Size mismatch'
     MissingKey = 'Missing key'
+    Info = 'Info'
 
 
 class CmpResult:
-    def __init__(self, match, path, diff=None, items=None):
+    def __init__(self, match, path, the_type=None, diff=None):
         self.match = match
         self.path = path
         self.diff = diff
-        self.items = items
+        self.type = the_type
+
+    def __str__(self):
+        return self.__repr__()
+
+    def __repr__(self):
+        return f'CmpResult ({self.type}/{self.match}): {self.path}: {self.diff}'
 
 
 class Cmp:
@@ -51,29 +59,30 @@ class Cmp:
         default_formatters = {Mismatches.Type: lambda o, t: f'{Mismatches.Type}: {type(o)} != {type(t)}',
                               Mismatches.Size: lambda o, t: f'{Mismatches.Size}: {len(o)} != {len(t)}',
                               Mismatches.MissingKey:
-                                  lambda k1, k2: f'{Mismatches.MissingKey}: {k1 or mk} != {k2 or mk}'}
+                                  lambda k1, k2: f'{Mismatches.MissingKey}: {k1 or mk} != {k2 or mk}',
+                              Mismatches.Info: lambda x: f'{Mismatches.Info}: {x}'}
         default_formatters.update(formatters)
         self.formatters = default_formatters
 
-    def _fmt(self, fmt_type, one, two):
-        return self.formatters[fmt_type](one, two)
+    def _fmt(self, fmt_type, *args):
+        return self.formatters[fmt_type](*args)
 
-    def compare(self, one, two, include_matches=False, order=True, max_length=30, max_iter=1000, path=None):
+    def compare(self, one, two, include_matches=False, order=True, max_length=30, max_iteration=1000, path=None):
         path = path if path is not None else []
         if one is two:
             logger.info('Objects are the same.  Returning match')
-            return CmpResult(True, path, diff='Same object compared') if include_matches else None
+            return [CmpResult(True, path, diff='Same object compared')] if include_matches else []
         if type(one) != type(two):
-            return CmpResult(False, path, diff=self._fmt(Mismatches.Type, one, two))
+            return [CmpResult(False, path, diff=self._fmt(Mismatches.Type, one, two))]
         cmp = self.comparators.get(type(one))
         if cmp:
             return cmp.compare(one, two, order=order, max_length=max_length, path=path, include_matches=include_matches)
-        if isinstance(one, dict):
+        if isinstance(one, Mapping):
             missing_in_one = two.keys() - one.keys()
-            items = {}
+            results = []
             for k, v1 in one.items():
                 if k not in two:
-                    items[k] = CmpResult(False, path + [k], diff=self._fmt(Mismatches.MissingKey, k, None))
+                    results.append(CmpResult(False, path + [k], diff=self._fmt(Mismatches.MissingKey, k, None)))
                 else:
                     v2 = two.get(k)
                     r = self.compare(v1,
@@ -82,27 +91,34 @@ class Cmp:
                                      max_length=max_length,
                                      path=path + [k],
                                      include_matches=include_matches)
-                    if r and not r.match or include_matches:
-                        items[k] = r
+                    results.extend(r)
             for k in missing_in_one:
-                items[k] = CmpResult(False, path + [k], diff=self._fmt(Mismatches.MissingKey, None, k))
-            match = all([v.match for k, v in items.items()])
-            return CmpResult(match, path, items=items) if not match or include_matches else None
+                results.append(CmpResult(False, path + [k], diff=self._fmt(Mismatches.MissingKey, None, k)))
+
+            match = all([x.match for x in results])
+            if not match or include_matches:
+                results.insert(0,
+                               CmpResult(match,
+                                         path,
+                                         the_type=type(one).__name__,
+                                         diff=self._fmt(Mismatches.Info,
+                                                        f'Mapping match {match}')))
+            return results
         if _iterable(one):
             try:
                 len(one)
             except TypeError:
-                logger.warning(f'No length for iterator, max_iter: {max_iter}')
-                if max_iter:
-                    one = islice(one, max_iter)
-                    two = islice(two, max_iter)
+                logger.warning(f'No length for iterator, max_iter: {max_iteration}')
+                if max_iteration:
+                    one = islice(one, max_iteration)
+                    two = islice(two, max_iteration)
                 else:
                     logger.warning('max_iter not set... making list of all items iterator')
                     one = list(one)
                     two = list(two)
 
             if len(one) != len(two):
-                return CmpResult(False, path, self._fmt(Mismatches.Size, one, two))
+                return [CmpResult(False, path, the_type=type(one).__name__, diff=self._fmt(Mismatches.Size, one, two))]
 
             o = list(one)
             t = list(two)
@@ -113,8 +129,7 @@ class Cmp:
                 except:
                     pass
 
-            items = []
-            match = True
+            results = []
             for x in range(len(o)):
                 r = self.compare(o[x],
                                  t[x],
@@ -122,15 +137,21 @@ class Cmp:
                                  max_length=max_length,
                                  path=path + [x],
                                  include_matches=include_matches)
-                if r:
-                    items.append(r)
-                    if match:
-                        match = r.match
-            return CmpResult(match, path, items=items) if not match or include_matches else None
+                results.extend(r)
+            match = all([x.match for x in results])
+            if not match or include_matches:
+                results.insert(0,
+                               CmpResult(match,
+                                         path,
+                                         the_type=type(one).__name__,
+                                         diff=self._fmt(Mismatches.Info,
+                                                        f'Mapping match {match}')))
+            return results
         else:
             match = eq(one, two)
             diff = _str(one, two, max_length, match=match)
-            return CmpResult(match, path, diff=diff) if not match or include_matches else None
+            return [
+                CmpResult(match, path, the_type=type(one).__name__, diff=diff)] if not match or include_matches else []
 
 
 def _str(o, t, max_length, match=True):
