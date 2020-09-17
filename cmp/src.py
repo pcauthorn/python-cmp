@@ -12,7 +12,7 @@ context
 
 """
 import logging
-from collections import Mapping
+from collections.abc import Mapping
 from itertools import islice
 from operator import eq
 
@@ -67,16 +67,28 @@ class Cmp:
     def _fmt(self, fmt_type, *args):
         return self.formatters[fmt_type](*args)
 
-    def compare(self, one, two, include_matches=False, order=True, max_length=30, max_iteration=1000, path=None):
+    def get_diffs(self,
+                  one,
+                  two,
+                  include_matches=False,
+                  order_lists=True,
+                  max_length=30,
+                  max_iteration=1000,
+                  path=None):
         path = path if path is not None else []
         if one is two:
             logger.info('Objects are the same.  Returning match')
             return [CmpResult(True, path, diff='Same object compared')] if include_matches else []
         if type(one) != type(two):
             return [CmpResult(False, path, diff=self._fmt(Mismatches.Type, one, two))]
-        cmp = self.comparators.get(type(one))
-        if cmp:
-            return cmp.compare(one, two, order=order, max_length=max_length, path=path, include_matches=include_matches)
+        comparator = self.comparators.get(type(one))
+        if comparator:
+            return comparator.compare(one,
+                                      two,
+                                      order_lists=order_lists,
+                                      max_length=max_length,
+                                      path=path,
+                                      include_matches=include_matches)
         if isinstance(one, Mapping):
             missing_in_one = two.keys() - one.keys()
             results = []
@@ -85,12 +97,12 @@ class Cmp:
                     results.append(CmpResult(False, path + [k], diff=self._fmt(Mismatches.MissingKey, k, None)))
                 else:
                     v2 = two.get(k)
-                    r = self.compare(v1,
-                                     v2,
-                                     order=order,
-                                     max_length=max_length,
-                                     path=path + [k],
-                                     include_matches=include_matches)
+                    r = self.get_diffs(v1,
+                                       v2,
+                                       order_lists=order_lists,
+                                       max_length=max_length,
+                                       path=path + [k],
+                                       include_matches=include_matches)
                     results.extend(r)
             for k in missing_in_one:
                 results.append(CmpResult(False, path + [k], diff=self._fmt(Mismatches.MissingKey, None, k)))
@@ -105,24 +117,17 @@ class Cmp:
                                                         f'Mapping match {match}')))
             return results
         if _iterable(one):
-            try:
-                len(one)
-            except TypeError:
-                logger.warning(f'No length for iterator, max_iter: {max_iteration}')
-                if max_iteration:
-                    one = islice(one, max_iteration)
-                    two = islice(two, max_iteration)
-                else:
-                    logger.warning('max_iter not set... making list of all items iterator')
-                    one = list(one)
-                    two = list(two)
+
+            if max_iteration:
+                one = list(islice(one, max_iteration))
+                two = list(islice(two, max_iteration))
 
             if len(one) != len(two):
                 return [CmpResult(False, path, the_type=type(one).__name__, diff=self._fmt(Mismatches.Size, one, two))]
 
             o = list(one)
             t = list(two)
-            if order:
+            if order_lists:
                 try:
                     o = sorted(o)
                     t = sorted(t)
@@ -131,12 +136,12 @@ class Cmp:
 
             results = []
             for x in range(len(o)):
-                r = self.compare(o[x],
-                                 t[x],
-                                 order=order,
-                                 max_length=max_length,
-                                 path=path + [x],
-                                 include_matches=include_matches)
+                r = self.get_diffs(o[x],
+                                   t[x],
+                                   order_lists=order_lists,
+                                   max_length=max_length,
+                                   path=path + [x],
+                                   include_matches=include_matches)
                 results.extend(r)
             match = all([x.match for x in results])
             if not match or include_matches:
@@ -145,13 +150,34 @@ class Cmp:
                                          path,
                                          the_type=type(one).__name__,
                                          diff=self._fmt(Mismatches.Info,
-                                                        f'Mapping match {match}')))
+                                                        f'Iterable match {match}')))
             return results
         else:
             match = eq(one, two)
             diff = _str(one, two, max_length, match=match)
             return [
                 CmpResult(match, path, the_type=type(one).__name__, diff=diff)] if not match or include_matches else []
+
+    def output_diffs(self,
+                     one,
+                     two,
+                     include_matches=False,
+                     order_lists=True,
+                     max_length=30,
+                     max_iteration=1000,
+                     output=None):
+        output = output or print
+        diffs = self.get_diffs(one,
+                               two,
+                               include_matches=include_matches,
+                               order_lists=order_lists,
+                               max_length=max_length,
+                               max_iteration=max_iteration)
+        for d in diffs:
+            prefix = '\t' * len(d.path)
+            name = d.path[-1] if len(d.path) > 0 else 'root'
+            t = f'({d.type})' if d.type else ''
+            output(f'{prefix} {name} {t}: {d.diff}')
 
 
 def _str(o, t, max_length, match=True):
@@ -172,3 +198,10 @@ def _iterable(obj):
         return False
     else:
         return True
+
+
+if __name__ == '__main__':
+    o1 = dict(a={1, 2, 3}, b=dict(c=('a', 'b'), d={42: 43, 'd': 1.1, 'e': [1, 2]}))
+    o2 = dict(a={1, 2}, b=dict(c=('a',), d={42: 43, 'd': 1.1, 'e': [1, 3]}))
+    cmp = Cmp()
+    cmp.output_diffs(o1, o2)
