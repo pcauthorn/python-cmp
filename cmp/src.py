@@ -1,16 +1,3 @@
-"""
-Thoughts:
-Handle significant digits as comparator + an arg be an arg as that shortcut for adding that comparator
-fast_fail?
-
-CmpResult:
-match boolean
-result format
-path -> list of index or keys
-obj
-context
-
-"""
 import logging
 from collections.abc import Mapping
 from itertools import islice
@@ -44,18 +31,18 @@ class Cmp:
 
     def __init__(self, comparators=None, formatters=None):
         """
-        :param comparators:
-        dict:
-         type: comparator
-        :param formatters:
-        dict:
-         type : function(one, two) -> diff (a string unless something fancier is called for)
-         MismatchType:str ->  "
+                :param comparators:
+                dict:
+                 type: comparator
+                :param formatters:
+                dict:
+                 type : function(...) -> diff (a string unless something fancier is called for)
+                 MismatchType:str ->  "
 
-        """
+                """
         formatters = formatters or {}
         self.comparators = comparators or {}
-        mk = '<No Existent Key>'
+        mk = '<Non Existent Key>'
         default_formatters = {Mismatches.Type: lambda o, t: f'{Mismatches.Type}: {type(o)} != {type(t)}',
                               Mismatches.Size: lambda o, t: f'{Mismatches.Size}: {len(o)} != {len(t)}',
                               Mismatches.MissingKey:
@@ -73,8 +60,25 @@ class Cmp:
                   include_matches=False,
                   order_lists=True,
                   max_length=30,
-                  max_iteration=1000,
-                  path=None):
+                  max_iteration=1000):
+        return self._get_diffs(one,
+                               two,
+                               include_matches=include_matches,
+                               order_lists=order_lists,
+                               max_length=max_length,
+                               max_iteration=max_iteration)
+
+    #  TODO: have significant_digits arg.  This should be shorthand for a comparator
+    #  TODO: handle cycles
+    #  TODO: have skips by type.  Maybe match could be an enum with True/False/Skip instead of Boolean
+    def _get_diffs(self,
+                   one,
+                   two,
+                   include_matches=False,
+                   order_lists=True,
+                   max_length=30,
+                   max_iteration=1000,
+                   path=None):
         path = path if path is not None else []
         if one is two:
             logger.info('Objects are the same.  Returning match')
@@ -97,12 +101,12 @@ class Cmp:
                     results.append(CmpResult(False, path + [k], diff=self._fmt(Mismatches.MissingKey, k, None)))
                 else:
                     v2 = two.get(k)
-                    r = self.get_diffs(v1,
-                                       v2,
-                                       order_lists=order_lists,
-                                       max_length=max_length,
-                                       path=path + [k],
-                                       include_matches=include_matches)
+                    r = self._get_diffs(v1,
+                                        v2,
+                                        order_lists=order_lists,
+                                        max_length=max_length,
+                                        path=path + [k],
+                                        include_matches=include_matches)
                     results.extend(r)
             for k in missing_in_one:
                 results.append(CmpResult(False, path + [k], diff=self._fmt(Mismatches.MissingKey, None, k)))
@@ -136,12 +140,12 @@ class Cmp:
 
             results = []
             for x in range(len(o)):
-                r = self.get_diffs(o[x],
-                                   t[x],
-                                   order_lists=order_lists,
-                                   max_length=max_length,
-                                   path=path + [x],
-                                   include_matches=include_matches)
+                r = self._get_diffs(o[x],
+                                    t[x],
+                                    order_lists=order_lists,
+                                    max_length=max_length,
+                                    path=path + [x],
+                                    include_matches=include_matches)
                 results.extend(r)
             match = all([x.match for x in results])
             if not match or include_matches:
@@ -176,8 +180,8 @@ class Cmp:
         for d in diffs:
             prefix = '\t' * len(d.path)
             name = d.path[-1] if len(d.path) > 0 else 'root'
-            t = f'({d.type})' if d.type else ''
-            output(f'{prefix} {name} {t}: {d.diff}')
+            t = f' ({d.type})' if d.type else ''
+            output(f'{prefix}{name}{t}: {d.diff}')
 
 
 def _str(o, t, max_length, match=True):
@@ -192,16 +196,11 @@ def _str(o, t, max_length, match=True):
 
 
 def _iterable(obj):
+    if isinstance(obj, str):
+        return False
     try:
         iter(obj)
     except:
         return False
     else:
         return True
-
-
-if __name__ == '__main__':
-    o1 = dict(a={1, 2, 3}, b=dict(c=('a', 'b'), d={42: 43, 'd': 1.1, 'e': [1, 2]}))
-    o2 = dict(a={1, 2}, b=dict(c=('a',), d={42: 43, 'd': 1.1, 'e': [1, 3]}))
-    cmp = Cmp()
-    cmp.output_diffs(o1, o2)
